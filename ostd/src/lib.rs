@@ -5,6 +5,7 @@
 #![feature(allocator_api)]
 #![feature(btree_cursors)]
 #![feature(core_intrinsics)]
+#![feature(freeze)]
 #![feature(linkage)]
 #![feature(min_specialization)]
 #![feature(negative_impls)]
