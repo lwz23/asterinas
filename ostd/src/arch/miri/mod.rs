@@ -31,6 +31,7 @@ use core::{
 use crate::task::Task;
 
 pub(crate) unsafe fn late_init_on_bsp() {
+    irq::init();
     kernel::init();
     timer::init();
     // SAFETY: We're on the BSP and we're ready to boot all APs.
