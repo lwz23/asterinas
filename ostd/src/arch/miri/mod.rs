@@ -15,6 +15,13 @@ pub mod serial;
 pub mod task;
 pub mod timer;
 pub mod trap;
+pub mod kernel;
+
+#[macro_export]
+macro_rules! if_tdx_enabled {
+    ($if_block:block else $else_block:block) => {{ $else_block }};
+    ($if_block:block) => {{}};
+}
 
 use core::{
     fmt::{self, Arguments, Write},
@@ -24,6 +31,7 @@ use core::{
 use crate::task::Task;
 
 pub(crate) unsafe fn late_init_on_bsp() {
+    kernel::init();
     timer::init();
     // SAFETY: We're on the BSP and we're ready to boot all APs.
     unsafe { crate::boot::smp::boot_all_aps() };
@@ -127,6 +135,8 @@ pub enum PageType {
     PageTable = 2,
     Stack = 3,
     Interpreter = 4,
+    /// One heap object covering one or more pages.
+    Large = 5,
 }
 
 pub struct MiriStdout;

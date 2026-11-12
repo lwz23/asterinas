@@ -3,26 +3,51 @@
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use core::{fmt::Debug, ops::Range};
 
-use bitvec::prelude::BitVec;
+const BITS_PER_WORD: usize = u64::BITS as usize;
 
-/// An id allocator implemented by the bitmap.
+/// An id allocator implemented by a bitmap.
 /// The true bit implies that the id is allocated, and vice versa.
+//
+// The bitmap is hand-rolled on `Vec<u64>` instead of using the `bitvec`
+// crate: `bitvec` 1.x materializes `&mut BitSlice` references from tags
+// created by zero-size retags, which violates Stacked Borrows and is
+// reported as undefined behavior when the kernel runs under (K)Miri
+// (same family as asterinas#3871).
 #[derive(Clone)]
 pub struct IdAlloc {
-    bitset: BitVec<u8>,
+    words: Vec<u64>,
+    len: usize,
     first_available_id: usize,
 }
 
 impl IdAlloc {
     /// Constructs a new id allocator with a maximum capacity.
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut bitset = BitVec::with_capacity(capacity);
-        bitset.resize(capacity, false);
         Self {
-            bitset,
+            words: alloc::vec![0u64; capacity.div_ceil(BITS_PER_WORD)],
+            len: capacity,
             first_available_id: 0,
+        }
+    }
+
+    fn get(&self, id: usize) -> bool {
+        assert!(id < self.len);
+        self.words[id / BITS_PER_WORD] & (1u64 << (id % BITS_PER_WORD)) != 0
+    }
+
+    fn set(&mut self, id: usize, value: bool) {
+        assert!(id < self.len);
+        let word = &mut self.words[id / BITS_PER_WORD];
+        let mask = 1u64 << (id % BITS_PER_WORD);
+        if value {
+            *word |= mask;
+        } else {
+            *word &= !mask;
         }
     }
 
@@ -30,9 +55,9 @@ impl IdAlloc {
     ///
     /// If allocation is not possible, it returns `None`.
     pub fn alloc(&mut self) -> Option<usize> {
-        if self.first_available_id < self.bitset.len() {
+        if self.first_available_id < self.len {
             let id = self.first_available_id;
-            self.bitset.set(id, true);
+            self.set(id, true);
             self.update_first_available_id(id + 1);
             Some(id)
         } else {
@@ -53,7 +78,7 @@ impl IdAlloc {
         }
 
         let end = self.first_available_id.checked_add(count)?;
-        if end > self.bitset.len() {
+        if end > self.len {
             return None;
         }
 
@@ -62,7 +87,7 @@ impl IdAlloc {
         let allocated_range = {
             // Invariance: all bits within `curr_range` are 0's
             let mut curr_range = self.first_available_id..self.first_available_id + 1;
-            while curr_range.len() < count && curr_range.end < self.bitset.len() {
+            while curr_range.len() < count && curr_range.end < self.len {
                 if !self.is_allocated(curr_range.end) {
                     curr_range.end += 1;
                 } else {
@@ -79,7 +104,7 @@ impl IdAlloc {
 
         // Set every bit to 1 within the allocated range
         for id in allocated_range.clone() {
-            self.bitset.set(id, true);
+            self.set(id, true);
         }
 
         // In case we need to update first_available_id
@@ -103,7 +128,7 @@ impl IdAlloc {
         let range_start = range.start;
         for id in range {
             debug_assert!(self.is_allocated(id));
-            self.bitset.set(id, false);
+            self.set(id, false);
         }
 
         if range_start < self.first_available_id {
@@ -119,7 +144,7 @@ impl IdAlloc {
     pub fn free(&mut self, id: usize) {
         debug_assert!(self.is_allocated(id));
 
-        self.bitset.set(id, false);
+        self.set(id, false);
         if id < self.first_available_id {
             self.first_available_id = id;
         }
@@ -134,10 +159,10 @@ impl IdAlloc {
     ///
     /// If the `id` is out of bounds, this method will panic.
     pub fn alloc_specific(&mut self, id: usize) -> Option<usize> {
-        if self.bitset[id] {
+        if self.get(id) {
             return None;
         }
-        self.bitset.set(id, true);
+        self.set(id, true);
         if id == self.first_available_id {
             self.update_first_available_id(id + 1);
         }
@@ -150,27 +175,23 @@ impl IdAlloc {
     ///
     /// If the `id` is out of bounds, this method will panic.
     pub fn is_allocated(&self, id: usize) -> bool {
-        self.bitset[id]
+        self.get(id)
     }
 
     /// Updates the `first_available_id` field to the first zero index at or after `start`.
     fn update_first_available_id(&mut self, start: usize) {
-        let len = self.bitset.len();
-        let bit_slice = self
-            .bitset
-            .get(start..len)
-            .expect("start is guaranteed to be valid by the caller");
-        self.first_available_id = bit_slice
-            .first_zero()
-            .map(|offset| start + offset)
-            .unwrap_or(len);
+        let mut id = start;
+        while id < self.len && self.get(id) {
+            id += 1;
+        }
+        self.first_available_id = id;
     }
 }
 
 impl Debug for IdAlloc {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         f.debug_struct("IdAlloc")
-            .field("len", &self.bitset.len())
+            .field("len", &self.len)
             .field("first_available_id", &self.first_available_id)
             .finish()
     }
@@ -192,5 +213,19 @@ mod test {
         // Allocating one more ID should fail since the
         // bitmap's `first_available_id` + `count` is out of bounds.
         assert!(bitmap.alloc_consecutive(1).is_none());
+    }
+
+    #[test]
+    fn alloc_free_realloc() {
+        let mut bitmap = IdAlloc::with_capacity(8);
+        assert_eq!(bitmap.alloc(), Some(0));
+        assert_eq!(bitmap.alloc(), Some(1));
+        bitmap.free(0);
+        assert!(!bitmap.is_allocated(0));
+        assert_eq!(bitmap.alloc(), Some(0));
+        assert_eq!(bitmap.alloc_specific(5), Some(5));
+        assert_eq!(bitmap.alloc_specific(5), None);
+        assert_eq!(bitmap.alloc_consecutive(3), Some(2..5));
+        assert_eq!(bitmap.alloc(), Some(6));
     }
 }

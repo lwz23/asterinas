@@ -80,11 +80,21 @@ pub fn main(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let body = ostd_main_body(main_fn_name);
 
     quote!(
-        #[cfg(not(ktest))]
+        #[cfg(all(not(ktest), not(miri)))]
         // SAFETY: The name does not collide with other symbols.
         #[unsafe(no_mangle)]
         extern "Rust" fn __ostd_main() -> ! {
             #body
+        }
+
+        #[cfg(miri)]
+        // Miri's boot entry expects a returning function, and OSDK also sets
+        // cfg(ktest). Run the actual main rather than the native test runner.
+        // SAFETY: The name does not collide with other symbols.
+        #[unsafe(no_mangle)]
+        extern "Rust" fn __ostd_main() {
+            let _: () = #main_fn_name();
+            ::ostd::task::Task::yield_now();
         }
 
         #[expect(unused)]
@@ -199,6 +209,7 @@ pub fn global_frame_allocator(_attr: TokenStream, item: TokenStream) -> TokenStr
     quote!(
         // SAFETY: The name does not collide with other symbols.
         #[unsafe(no_mangle)]
+        #[cfg(not(miri))]
         static __GLOBAL_FRAME_ALLOCATOR_REF: &'static dyn ::ostd::mm::frame::GlobalFrameAllocator =
             &#static_name;
 
@@ -246,7 +257,10 @@ pub fn global_heap_allocator(_attr: TokenStream, item: TokenStream) -> TokenStre
     let static_name = &item.ident;
 
     quote!(
-        // SAFETY: The name does not collide with other symbols.
+        // Under Miri the cross-crate strong static has no CTFE MIR, and the
+        // interpreter aborts while importing it. The runner already provides
+        // the weak default used by the OSTD tests.
+        #[cfg(not(miri))]
         #[unsafe(no_mangle)]
         static __GLOBAL_HEAP_ALLOCATOR_REF: &'static dyn ::ostd::mm::heap::GlobalHeapAllocator =
             &#static_name;

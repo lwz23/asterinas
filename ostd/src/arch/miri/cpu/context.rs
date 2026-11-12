@@ -13,6 +13,7 @@ use x86::bits64::segmentation::wrfsbase;
 use x86_64::registers::{rflags::RFlags, xcontrol::XCr0};
 
 use crate::{
+    irq::DisabledLocalIrqGuard,
     arch::{
         irq::HwIrqLine,
         trap::{RawUserContext, TrapFrame},
@@ -498,7 +499,7 @@ impl FpuContext {
     }
 
     /// Loads CPU's FPU context from this instance.
-    pub fn load(&mut self) {
+    pub fn load(&self) {
         let mem_addr = self.as_bytes().as_ptr();
 
         if let Some(xstate_max_features) = XSTATE_MAX_FEATURES.get() {
@@ -614,3 +615,38 @@ static XSAVE_AREA_SIZE: Once<usize> = Once::new();
 
 /// The max size in bytes of the XSAVE area.
 const MAX_XSAVE_AREA_SIZE: usize = 4096;
+
+/// RFLAGS bits that non-privileged code may modify. Same mask as the x86 context.
+pub const USER_MODIFIABLE_RFLAGS: usize = (RFlags::CARRY_FLAG.bits()
+    | RFlags::PARITY_FLAG.bits()
+    | RFlags::AUXILIARY_CARRY_FLAG.bits()
+    | RFlags::ZERO_FLAG.bits()
+    | RFlags::SIGN_FLAG.bits()
+    | RFlags::TRAP_FLAG.bits()
+    | RFlags::DIRECTION_FLAG.bits()
+    | RFlags::OVERFLOW_FLAG.bits()
+    | RFlags::RESUME_FLAG.bits()
+    | RFlags::ALIGNMENT_CHECK.bits()
+    | RFlags::NESTED_TASK.bits()) as usize;
+
+/// User-mode FS base. The Miri platform stores the value; it does not execute `wrfsbase`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FsBase(usize);
+
+impl FsBase {
+    pub fn new(addr: usize) -> Self { Self(addr) }
+    pub fn addr(&self) -> usize { self.0 }
+    pub fn save(&mut self) {}
+    pub fn load(&self) {}
+}
+
+/// User-mode GS base. The Miri platform stores the value; it does not execute `swapgs`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GsBase(usize);
+
+impl GsBase {
+    pub fn new(addr: usize) -> Self { Self(addr) }
+    pub fn addr(&self) -> usize { self.0 }
+    pub fn save(&mut self, _guard: &DisabledLocalIrqGuard) {}
+    pub fn load(&self, _guard: &DisabledLocalIrqGuard) {}
+}

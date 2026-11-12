@@ -91,6 +91,18 @@ impl HeapSlot {
             })?;
 
         let paddr_range = segment.into_raw();
+        // SAFETY: these frames were just allocated and are still untyped. Register
+        // the whole region as one Large object so the integer pointer handed back
+        // gets a single provenance on first access, the same way a slab does.
+        #[cfg(miri)]
+        unsafe {
+            crate::arch::kern_miri_retype_pages(
+                paddr_range.start,
+                nframes,
+                crate::arch::PageType::Large,
+                PAGE_SIZE,
+            );
+        }
         let vaddr = paddr_to_vaddr(paddr_range.start);
 
         Ok(Self {
