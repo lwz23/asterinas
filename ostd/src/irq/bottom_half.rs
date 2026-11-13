@@ -42,7 +42,8 @@ static BOTTOM_HALF_HANDLER_L2: Once<fn(u8)> = Once::new();
 pub(super) fn process(irq_num: u8) {
     match InterruptLevel::current() {
         InterruptLevel::L1(_) => process_l1(irq_num),
-        InterruptLevel::L2 => process_l2(irq_num),
+        // MUTANT: reintroduce #1648 (bottom half re-enables IRQs at every level)
+        InterruptLevel::L2 => process_l1(irq_num),
         _ => unreachable!("this function must have been call in interrupt context"),
     }
 }
