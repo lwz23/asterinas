@@ -24,6 +24,7 @@ unsafe extern "Rust" {
     fn kern_miri_irq_enable();
     fn kern_miri_register_irq_entry(entry: extern "Rust" fn(u8));
     fn kern_miri_test_raise_irq(vector: u8);
+    fn kern_miri_irq_eoi(vector: u8);
 }
 
 pub(crate) fn enable_local() {
@@ -95,12 +96,8 @@ impl HwIrqLine {
     }
 
     pub(crate) fn ack(&self) {
-        // debug_assert!(!crate::arch::cpu::context::CpuException::is_cpu_exception(
-        //     self.irq_num as usize
-        // ));
-        // TODO: We're in the interrupt context, so `disable_preempt()` is not
-        // really necessary here.
-        // kernel::apic::get_or_init(&crate::task::disable_preempt() as _).eoi();
+        // SAFETY: This acknowledges the serviced IRQ, corresponding to x86 LAPIC EOI.
+        unsafe { kern_miri_irq_eoi(self.irq_num) };
     }
 }
 
